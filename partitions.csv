@@ -1,0 +1,13 @@
+# ESP-IDF Partition Table. 
+
+# Original:
+# ## Label            Usage          Type ST Offset   Length
+# 0 nvs              WiFi data        01 02 00009000 00006000
+# 1 phy_init         RF data          01 01 0000f000 00001000
+# 2 factory          factory app      00 00 00010000 00100000
+
+# ESP-IDF Partition Table
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 3M,
