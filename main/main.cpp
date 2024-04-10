@@ -13,7 +13,7 @@
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_spi_flash.h"
-#include "tcpip_adapter.h"
+#include "esp_netif.h"
 #include "esp_eth.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -32,91 +32,22 @@
 #include "gatts_table_creat_demo.h"
 #include "cmd_ble.h"
 
+#include "ESPAsyncE131.h"
+
 
 static const char *TAG = "eth_example";
 static const char *payload = "Message from ESP32 ";
 
+ESPAsyncE131 e131(5);  // Buffers for 5 universes
 
-/** Event handler for Ethernet events */
-static void eth_event_handler(void *arg, esp_event_base_t event_base,
-                              int32_t event_id, void *event_data)
-{
-    uint8_t mac_addr[6] = {0};
-    /* we can get the ethernet driver handle from event data */
-    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
-
-    switch (event_id) {
-    case ETHERNET_EVENT_CONNECTED:
-        esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
-        ESP_LOGI(TAG, "Ethernet Link Up");
-        ESP_LOGI(TAG, "Ethernet HW Addr %02x:%02x:%02x:%02x:%02x:%02x",
-                 mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
-        break;
-    case ETHERNET_EVENT_DISCONNECTED:
-        ESP_LOGI(TAG, "Ethernet Link Down");
-        break;
-    case ETHERNET_EVENT_START:
-        ESP_LOGI(TAG, "Ethernet Started");
-        break;
-    case ETHERNET_EVENT_STOP:
-        ESP_LOGI(TAG, "Ethernet Stopped");
-        break;
-    default:
-        break;
-    }
-}
-
-static void udp_client_task(void *pvParameters)
-{
-    // const char * host_ip = "192.168.86.1";
-    const char * host_ip = "255.255.255.255";
-    const uint16_t port = 9999;
-    int addr_family = 0;
-    int ip_protocol = 0;
-
-    while (1) {
-
-        struct sockaddr_in dest_addr;
-        dest_addr.sin_addr.s_addr = inet_addr(host_ip);
-        dest_addr.sin_family = AF_INET;
-        dest_addr.sin_port = htons(port);
-        addr_family = AF_INET;
-        ip_protocol = IPPROTO_IP;
-
-        int sock = socket(addr_family, SOCK_DGRAM, ip_protocol);
-        if (sock < 0) {
-            ESP_LOGE(TAG, "Unable to create socket: errno %d", errno);
-            break;
-        }
-
-        // Set timeout
-        struct timeval timeout;
-        timeout.tv_sec = 10;
-        timeout.tv_usec = 0;
-        setsockopt (sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
-
-        ESP_LOGI(TAG, "Socket created, sending to %s:%d", host_ip, port);
-
-        while (1) {
-
-            int err = sendto(sock, payload, strlen(payload), 0, (struct sockaddr *)&dest_addr, sizeof(dest_addr));
-            if (err < 0) {
-                ESP_LOGE(TAG, "Error occurred during sending: errno %d", errno);
-                break;
-            }
-//            ESP_LOGI(TAG, "Message sent");
-
-            vTaskDelay(2000 / portTICK_PERIOD_MS);
-        }
-
-        if (sock != -1) {
-            ESP_LOGE(TAG, "Shutting down socket and restarting...");
-            shutdown(sock, 0);
-            close(sock);
-        }
-    }
-    vTaskDelete(NULL);
-}
+// #define EXAMPLE_STATIC_IP_ADDR        CONFIG_EXAMPLE_STATIC_IP_ADDR
+// #define EXAMPLE_STATIC_NETMASK_ADDR   CONFIG_EXAMPLE_STATIC_NETMASK_ADDR
+// #define EXAMPLE_STATIC_GW_ADDR        CONFIG_EXAMPLE_STATIC_GW_ADDR
+#define EXAMPLE_STATIC_IP_ADDR        "192.168.1.206"
+#define EXAMPLE_STATIC_NETMASK_ADDR   "255.255.255.0"
+#define EXAMPLE_STATIC_GW_ADDR        "192.168.1.1"
+#define EXAMPLE_MAIN_DNS_SERVER       "192.168.1.1"
+#define EXAMPLE_BACKUP_DNS_SERVER     "192.168.1.1"
 
 /** Event handler for IP_EVENT_ETH_GOT_IP */
 static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
@@ -132,21 +63,89 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
     ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
     ESP_LOGI(TAG, "~~~~~~~~~~~");
-
-    xTaskCreate(udp_client_task, "udp_client", 4096, NULL, 5, NULL);
 }
 
 extern "C" {
   void app_main();
 }
 
+static esp_err_t example_set_dns_server(esp_netif_t *netif, uint32_t addr, esp_netif_dns_type_t type)
+{
+    if (addr && (addr != IPADDR_NONE)) {
+        esp_netif_dns_info_t dns;
+        dns.ip.u_addr.ip4.addr = addr;
+        dns.ip.type = IPADDR_TYPE_V4;
+        ESP_ERROR_CHECK(esp_netif_set_dns_info(netif, type, &dns));
+    }
+    return ESP_OK;
+}
+
+static void example_set_static_ip(esp_netif_t *netif)
+{
+    esp_err_t result;
+    if ((result = esp_netif_dhcpc_stop(netif)) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to stop dhcp client - %d: %s", result, esp_err_to_name(result));
+        // return;
+    }
+    esp_netif_ip_info_t ip;
+    memset(&ip, 0 , sizeof(esp_netif_ip_info_t));
+    ip.ip.addr = ipaddr_addr(EXAMPLE_STATIC_IP_ADDR);
+    ip.netmask.addr = ipaddr_addr(EXAMPLE_STATIC_NETMASK_ADDR);
+    ip.gw.addr = ipaddr_addr(EXAMPLE_STATIC_GW_ADDR);
+    if (esp_netif_set_ip_info(netif, &ip) != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set ip info - %d: %s", result, esp_err_to_name(result));
+        return;
+    }
+    ESP_LOGD(TAG, "Success to set static ip: %s, netmask: %s, gw: %s", EXAMPLE_STATIC_IP_ADDR, EXAMPLE_STATIC_NETMASK_ADDR, EXAMPLE_STATIC_GW_ADDR);
+    ESP_ERROR_CHECK(example_set_dns_server(netif, ipaddr_addr(EXAMPLE_MAIN_DNS_SERVER), ESP_NETIF_DNS_MAIN));
+    ESP_ERROR_CHECK(example_set_dns_server(netif, ipaddr_addr(EXAMPLE_BACKUP_DNS_SERVER), ESP_NETIF_DNS_BACKUP));
+}
+
+/** Event handler for Ethernet events */
+static void eth_event_handler(void *arg, esp_event_base_t event_base,
+                              int32_t event_id, void *event_data)
+{
+    uint8_t mac_addr[6] = {0};
+    /* we can get the ethernet driver handle from event data */
+    esp_eth_handle_t eth_handle = *(esp_eth_handle_t *)event_data;
+
+    ESP_LOGI(TAG, "eth_event_handler - arg=%p, event_base=%d, event_id=%d", arg, (uint32_t)event_base, (uint32_t)event_id);
+
+    switch (event_id) {
+    case ETHERNET_EVENT_CONNECTED:
+        esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
+        ESP_LOGI(TAG, "Ethernet Link Up");
+        ESP_LOGI(TAG, "Ethernet HW Addr %02x:%02x:%02x:%02x:%02x:%02x",
+                 mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+
+        // Now start up the E1.31 receiver
+        e131.begin(E131_UNICAST);
+        break;
+    case ETHERNET_EVENT_DISCONNECTED:
+        ESP_LOGI(TAG, "Ethernet Link Down");
+        break;
+    case ETHERNET_EVENT_START:
+        ESP_LOGI(TAG, "Ethernet Started");
+        break;
+    case ETHERNET_EVENT_STOP:
+        ESP_LOGI(TAG, "Ethernet Stopped");
+        break;
+    default:
+        break;
+    }
+}
+
 void setupEthernet() {
-    tcpip_adapter_init();
+    esp_netif_init();
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(tcpip_adapter_set_default_eth_handlers());
     ESP_ERROR_CHECK(esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, &eth_event_handler, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_ETH_GOT_IP, &got_ip_event_handler, NULL));
+
+    // Create new default instance of esp-netif for Ethernet
+    esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+    esp_netif_t *eth_netif = esp_netif_new(&cfg);
 
     eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
     eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
@@ -195,8 +194,40 @@ void setupEthernet() {
     esp_eth_config_t config = ETH_DEFAULT_CONFIG(mac, phy);
     esp_eth_handle_t eth_handle = NULL;
     ESP_ERROR_CHECK(esp_eth_driver_install(&config, &eth_handle));
+    ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
+
+example_set_static_ip(eth_netif);
+
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
 }
+
+/*
+xLights expects the following:
+192.168.1.206
+Universes 1-5 (chan 1-2550)
+
+                Chan   Chan
+                Start  End
+Roof:           1      900
+Underbody:      901    1620
+Left Rocker:    1621   1776
+Left Upright:   1777   1947
+Right Rocker:   1948   2103
+Right Upright:  2104   2274
+
+* Note that led-controller has following:
+Roof:      Output A
+Underbody: Output B
+Right:     Output C
+Left:      Output D
+
+So first pixel of strip:
+A: chans 1-3
+B: chans 901-903
+C: chans 1948-1951
+D: chans 1621-1623
+
+*/
 
 void app_main() {
 
@@ -210,13 +241,14 @@ void app_main() {
     ESP_ERROR_CHECK(ret);
 
     // We want the LEDs running ASAP after power-up
+    LedController::SetE131Interface(&e131);
     LedController::Start();
 
     // Give the LED task time to start
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
-    // TODO: Uncomment this when we start using Ethernet for DMX
-    //setupEthernet();
+    // Start Ethernet with static IP to be able to listed for E1.31 packets
+    setupEthernet();
 
     // BLE used for user's remote control - this can be last because the user can wait a few seconds
     setup_GATTS();

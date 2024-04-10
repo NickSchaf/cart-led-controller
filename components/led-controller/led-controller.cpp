@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -26,10 +27,21 @@
 #define DATA_PIN_D 16
 #define DATA_PIN_LED_SOURCE_RELAY  32
 
+#define STRIP_A_COUNT 300
+#define STRIP_B_COUNT 240
+#define STRIP_C_COUNT 109
+#define STRIP_D_COUNT 109
+#define ALL_LEDS_COUNT (STRIP_A_COUNT+STRIP_B_COUNT+STRIP_C_COUNT+STRIP_D_COUNT)
+
+#define DMX_CHANNELS_PER_UNIVERSE 510
+#define DMX_PIXELS_PER_UNIVERSE (DMX_CHANNELS_PER_UNIVERSE/3)
+
 #define LED_TYPE    WS2811
 #define COLOR_ORDER GRB
 #define SAVE_SETTINGS_TIMEOUT      5000
 #define DEFAULT_FRAMES_PER_SECOND  100
+
+#define EVENT_BIT_E131_FRAME_READY ( 1 << 0)
 
 #define POWER_TESTING 0  // Set to 1 to run the power test sequence instead of normal operation
 #define INCLUDE_TEST_PATTERNS 0  // 1 to include special test patterns
@@ -55,27 +67,32 @@ typedef struct led_strip_t
     CRGB * pixels;
 } led_strip_t;
 
+led_strip_t allLEDs = {
+    .pixel_count = ALL_LEDS_COUNT,
+    .pixels = nullptr
+};
+
 // Roof - starts back-right, wraps around front to back-left
 led_strip_t strip_A = {
-    .pixel_count = 300,
+    .pixel_count = STRIP_A_COUNT,
     // .pixel_count = 12,
     .pixels = nullptr
 };
 // Underbody
 led_strip_t strip_B = {
-    .pixel_count = 240,
+    .pixel_count = STRIP_B_COUNT,
     .pixels = nullptr
 };
 // Sides: 52 LEDs on rocker panel daisy-chained to 57 LEDs on upright
 
 // Right side
 led_strip_t strip_C = {
-    .pixel_count = 109,
+    .pixel_count = STRIP_C_COUNT,
     .pixels = nullptr
 };
 // Left side
 led_strip_t strip_D = {
-    .pixel_count = 109,
+    .pixel_count = STRIP_D_COUNT,
     .pixels = nullptr
 };
 
@@ -189,7 +206,7 @@ const led_pattern_t gPatterns[] = {
   { .func = Pattern_TEST_LeftRocker,      .name = "TEST L Rocker",    .fixedSpeed = 0,   .setsUnderbody = true,  .setsSides = true },
   { .func = Pattern_TEST_LeftUpright,     .name = "TEST L Upright",   .fixedSpeed = 0,   .setsUnderbody = true,  .setsSides = true },
 #endif
-  { .func = Pattern_Special_FalconPlayer, .name = "[Falcon Player]",  .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
+  { .func = Pattern_Special_FalconPlayer, .name = "[Falcon Player]",  .fixedSpeed = 0,   .setsUnderbody = true, .setsSides = true },
 };
 
 PatternColor_Rainbow * rainbowColor = new PatternColor_Rainbow();
@@ -229,7 +246,8 @@ ValueChangedCb _patternChangedCb;
 ValueChangedCb _colorChangedCb;
 ValueChangedCb _brightnessChangedCb;
 ValueChangedCb _speedChangedCb;
-
+ESPAsyncE131 * _e131_interface;
+EventGroupHandle_t _eventGroup;
 
 void init_led_strip(led_strip_t * strip)
 {
@@ -430,19 +448,20 @@ void ledTask(void *pvParameters)
         // Check whether the pattern changed to/from the special case
         if (gCurPattern != gPrevPattern)
         {
-            if (gPrevPattern != NULL)
+          if (gPrevPattern != NULL)
+          {
+            if (gPrevPattern->func == Pattern_Special_FalconPlayer)
             {
-              if (gPrevPattern->func == Pattern_Special_FalconPlayer)
-              {
-              // Switched away from FPP mode
-              digitalWrite(DATA_PIN_LED_SOURCE_RELAY, LOW);
-              }
-              else if (gCurPattern->func == Pattern_Special_FalconPlayer)
-              {
-              // Switch to FPP mode
-              digitalWrite(DATA_PIN_LED_SOURCE_RELAY, HIGH  );
-              }
+            // Switched away from FPP mode
+            digitalWrite(DATA_PIN_LED_SOURCE_RELAY, LOW);
             }
+            else if (gCurPattern->func == Pattern_Special_FalconPlayer)
+            {
+            // Switch to FPP mode
+            // digitalWrite(DATA_PIN_LED_SOURCE_RELAY, HIGH  );
+            // No longer switching to FPP mode because we're handling it here
+            }
+          }
         }
 
         // Call the current pattern function once, updating the 'strip_A.pixels' array
@@ -451,15 +470,28 @@ void ledTask(void *pvParameters)
         if (!gCurPattern->setsSides) copyRoofToSides();
         if (!gCurPattern->setsUnderbody) copyRoofToUnderbody();
 
-        FastLED.setBrightness(bounded_brightness.Value());
-        FastLED.show();
-        FastLED.delay(101 - ( (gCurPattern->fixedSpeed == 0) ? bounded_speed.Value() : gCurPattern->fixedSpeed ));
+        if (gCurPattern->func != Pattern_Special_FalconPlayer)
+        {
+          FastLED.setBrightness(bounded_brightness.Value());
+          FastLED.show();
+          FastLED.delay(101 - ( (gCurPattern->fixedSpeed == 0) ? bounded_speed.Value() : gCurPattern->fixedSpeed ));
+          std::for_each(gColors.begin(), gColors.end(), [](PatternColor* color) { color->Loop(); });
+        }
+        else
+        {
+          const TickType_t maxWaitTicks = 20 / portTICK_PERIOD_MS;
+          EventBits_t triggeredEvents = xEventGroupWaitBits(_eventGroup, EVENT_BIT_E131_FRAME_READY, pdTRUE, pdFALSE, maxWaitTicks);
 
-        std::for_each(gColors.begin(), gColors.end(), [](PatternColor* color) { color->Loop(); });
+          if ((triggeredEvents & EVENT_BIT_E131_FRAME_READY) != 0)
+          {
+            FastLED.show();
+            // printf("%lu\n",millis());
+          }
+        }
 
         EVERY_N_MILLISECONDS( 100 )
         {
-            SaveChangedSettings();
+          SaveChangedSettings();
         }
 
         gPrevPattern = gCurPattern;
@@ -471,22 +503,20 @@ void LedController::Start()
 {
   printf("Adding LEDs\n");
   // the WS2811 family uses the RMT driver
-  init_led_strip(&strip_A);
-  if (strip_A.pixels == NULL) ESP_LOGE(__func__, "Failed to initialize pixel strip A");
+  init_led_strip(&allLEDs);
+  if (allLEDs.pixels == NULL) ESP_LOGE(__func__, "Failed to initialize pixels");
   else
+  {
+    strip_A.pixels = allLEDs.pixels;
+    strip_B.pixels = &allLEDs.pixels[strip_A.pixel_count];
+    strip_C.pixels = &allLEDs.pixels[strip_A.pixel_count + strip_B.pixel_count];
+    strip_D.pixels = &allLEDs.pixels[strip_A.pixel_count + strip_B.pixel_count + strip_C.pixel_count];
+
     FastLED.addLeds<LED_TYPE, DATA_PIN_A, COLOR_ORDER>(strip_A.pixels, strip_A.pixel_count); // TODO: should I add .setCorrection(TypicalLEDStrip)  ??
-  init_led_strip(&strip_B);
-  if (strip_B.pixels == NULL) ESP_LOGE(__func__, "Failed to initialize pixel strip B");
-  else
     FastLED.addLeds<LED_TYPE, DATA_PIN_B, COLOR_ORDER>(strip_B.pixels, strip_B.pixel_count);
-  init_led_strip(&strip_C);
-  if (strip_C.pixels == NULL) ESP_LOGE(__func__, "Failed to initialize pixel strip C");
-  else
     FastLED.addLeds<LED_TYPE, DATA_PIN_C, COLOR_ORDER>(strip_C.pixels, strip_C.pixel_count);
-  init_led_strip(&strip_D);
-  if (strip_D.pixels == NULL) ESP_LOGE(__func__, "Failed to initialize pixel strip D");
-  else
     FastLED.addLeds<LED_TYPE, DATA_PIN_D, COLOR_ORDER>(strip_D.pixels, strip_D.pixel_count);
+  }
 
   // Rocker panel strip is daisy-chained to upright, so it follows the 
   strip_rightRocker.pixels = strip_C.pixels;
@@ -501,9 +531,15 @@ void LedController::Start()
   gpio_reset_pin(gpio_num_t(DATA_PIN_LED_SOURCE_RELAY));
   gpio_set_direction(gpio_num_t(DATA_PIN_LED_SOURCE_RELAY), GPIO_MODE_OUTPUT);
 
+  _eventGroup = xEventGroupCreate();
+  if (_eventGroup == NULL)
+  {
+    ESP_LOGE(__func__, "LedController: Failed to create event group.");
+  }
+
   LoadSavedSettings();
 
-  xTaskCreatePinnedToCore(&ledTask, "blinkLeds", 4000, nullptr, 6, nullptr, 1);
+  xTaskCreatePinnedToCore(&ledTask, "ledController", 4000, nullptr, 6, nullptr, 1);
 }
 
 CRGB GetCurrentColor()
@@ -685,6 +721,65 @@ void LedController::SetBrightness(uint8_t brightness)
   gBrightnessSaveState.SetChanged();
   if (_brightnessChangedCb != NULL) _brightnessChangedCb(brightness);
 }
+
+bool e131Callback(e131_packet_t* ReceivedData, void* UserInfo)
+{
+  if (gCurPattern->func != Pattern_Special_FalconPlayer)
+  {
+    // When not running the e131 mode, we'll drop all incoming packets
+    // returning true so the caller won't add the packet to the queue
+    return true;
+  }
+  else
+  {
+    if (ReceivedData == NULL) return false;
+
+    uint16_t universe = ntohs(ReceivedData->universe);
+    uint16_t prop_val_count = ntohs(ReceivedData->property_value_count);
+
+    // printf("seq %u; univ %u, count %u\n", e131Packet.sequence_number, universe, prop_val_count);
+
+    const uint16_t firstLedIdx = (universe - 1) * DMX_PIXELS_PER_UNIVERSE;
+    CRGB * curLed = &allLEDs.pixels[firstLedIdx];
+    const uint8_t * curChan = &ReceivedData->property_values[1];
+
+#if 0
+    static const CRGB * endLed = &allLEDs.pixels[ALL_LEDS_COUNT];
+    const uint8_t * endChan = &ReceivedData->property_values[prop_val_count];
+
+    // while (chanIdx < e131Packet.property_value_count && ledxIdx < ALL_LEDS_COUNT)
+    while (curChan < endChan && curLed < endLed)
+    {
+      (curLed)->r = *(curChan++);
+      (curLed)->g = *(curChan++);
+      (curLed++)->b = *(curChan++);
+    }
+#else
+    // Luckily CRGB is just 3 bytes in RGB order, so we can do a memcpy on top of the array
+    memcpy((void *)curLed, curChan, MIN(prop_val_count - 1, sizeof(CRGB) * (ALL_LEDS_COUNT - firstLedIdx)));
+
+    // printf("%u, %u, %u\n", universe, prop_val_count, firstLedIdx);
+#endif
+
+    if (universe == 5)
+    {
+      // Notify the other thread that the buffer is ready
+      xEventGroupSetBits(_eventGroup, EVENT_BIT_E131_FRAME_READY);
+    }
+    return true;
+  }
+}
+
+void LedController::SetE131Interface(ESPAsyncE131 * e131)
+{
+  _e131_interface = e131;
+  if (_e131_interface != NULL) _e131_interface->registerCallback(NULL, e131Callback);
+}
+
+// ESPAsyncE131* LedController::GetE131Interface()
+// {
+//   return _e131_interface;
+// }
 
 void addGlitter( fract8 chanceOfGlitter) 
 {
@@ -1026,10 +1121,8 @@ void TEST_Strip(led_strip_t * strip)
 
 void Pattern_Special_FalconPlayer()
 {
-  // TODO: Use E1.31 library to get LED settings from Ethernet
-
-  // For now, just fill black and the main loop function will switch the signal relay to the dedicated E1.31 controller
-  fill_solid( strip_A.pixels, strip_A.pixel_count, CRGB::Black );
+  // Nothing to do here; the frame is created via callback and the main task function
+  // waits for the frame-ready event
 }
 
 const TProgmemPalette16 redWhiteBluePalette_p =

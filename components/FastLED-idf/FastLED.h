@@ -5,7 +5,7 @@
 /// central include file for FastLED, defines the CFastLED class/object
 
 // BB hack
-#define ESP32
+//#define ESP32
 #define FASTLED_NO_PINMAP
 
 // prefer I2S? Comment this in.

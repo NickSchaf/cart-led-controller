@@ -13,5 +13,15 @@
     "files.associations": {
         "*.ipp": "cpp",
         "*.tcc": "cpp",
-        "gatts_table_creat_demo.h": "c"
+        "gatts_table_creat_demo.h": "c",
+        "array": "cpp",
+        "deque": "cpp",
+        "list": "cpp",
+        "string": "cpp",
+        "unordered_map": "cpp",
+        "unordered_set": "cpp",
+        "vector": "cpp",
+        "string_view": "cpp",
+        "initializer_list": "cpp",
+        "regex": "cpp"
     }}

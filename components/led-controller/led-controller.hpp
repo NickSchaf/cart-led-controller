@@ -3,6 +3,7 @@
 
 #include "led-controller.h"
 #include "FastLED.h"
+#include "ESPAsyncE131.h"
 
 #define USE_NEW_COLOR_CLASSES 1
 
@@ -23,6 +24,8 @@ class LedController
 	static void SetPattern(uint8_t patternIndex);
 	static void SetSpeed(uint8_t speed);
 	static void SetBrightness(uint8_t brightness);
+
+	static void SetE131Interface(ESPAsyncE131 * e131);
 
 	// TODO: Functions to get/set which segments (roof, sides, underbody) are enabled
 

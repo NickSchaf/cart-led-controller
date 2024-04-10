@@ -6,4 +6,4 @@ set(srcs
 
 idf_component_register(SRCS "PatternColor.cpp" "${srcs}"
 			INCLUDE_DIRS "." 
-			REQUIRES FastLED-idf WS2812FX-idf nvs_flash console )
+			REQUIRES FastLED-idf WS2812FX-idf nvs_flash console ESPAsyncE131 )
