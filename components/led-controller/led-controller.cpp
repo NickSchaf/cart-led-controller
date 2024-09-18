@@ -15,8 +15,10 @@
 
 #include "FastLED.h"
 #include "FX.h"
+#include "led-strip.h"
 #include "led-controller.hpp"
 #include "PatternColor.hpp"
+#include "fire.h"
 
 #include <vector>
 #include <algorithm>
@@ -60,12 +62,6 @@ const char * NVS_NAME_PATTERN_INDEX = "PatternIdx";
 const char * NVS_NAME_COLOR_INDEX = "ColorIdx";
 const char * NVS_NAME_SPEED = "Speed";
 const char * NVS_NAME_BRIGHTNESS = "Brightness";
-
-typedef struct led_strip_t
-{
-    const uint16_t pixel_count;
-    CRGB * pixels;
-} led_strip_t;
 
 led_strip_t allLEDs = {
     .pixel_count = ALL_LEDS_COUNT,
@@ -159,11 +155,13 @@ void Pattern_FadingMarquee();
 void Pattern_Police();
 void Pattern_Solid();
 void Pattern_Pulse();
+void Pattern_Strobe();
+void Pattern_Fire();
 void Pattern_Xmas2();
 void PatternRainbowStripe();
 void Pattern_RedWhiteBlue();
 void Pattern_Party();
-void Pattern_Cloudy();
+// void Pattern_Cloudy();
 void Pattern_Pride();
 #if INCLUDE_TEST_PATTERNS
 // Special test patterns to check each strip
@@ -192,11 +190,13 @@ const led_pattern_t gPatterns[] = {
   { .func = Pattern_Police,               .name = "Police",           .fixedSpeed = 70,  .setsUnderbody = true,  .setsSides = true },
   { .func = Pattern_Solid,                .name = "Solid",            .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
   { .func = Pattern_Pulse,                .name = "Pulse",            .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
+  { .func = Pattern_Strobe,               .name = "Strobe",           .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
+  { .func = Pattern_Fire,                 .name = "Fire",             .fixedSpeed = 90,  .setsUnderbody = false, .setsSides = true },
   { .func = Pattern_Xmas2,                .name = "Xmas Moving",      .fixedSpeed = 10,  .setsUnderbody = false, .setsSides = false },
   { .func = PatternRainbowStripe,         .name = "Rainbow Stripe",   .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
   { .func = Pattern_RedWhiteBlue,         .name = "Red, White, Blue", .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
   { .func = Pattern_Party,                .name = "Party",            .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
-  { .func = Pattern_Cloudy,               .name = "Cloudy",           .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
+  // { .func = Pattern_Cloudy,               .name = "Cloudy",           .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
   { .func = Pattern_Pride,                .name = "Pride",            .fixedSpeed = 0,   .setsUnderbody = false, .setsSides = false },
 #if INCLUDE_TEST_PATTERNS
   { .func = Pattern_TEST_Roof,            .name = "TEST Roof",        .fixedSpeed = 0,   .setsUnderbody = true,  .setsSides = true },
@@ -214,6 +214,7 @@ typedef std::vector<PatternColor*>::iterator PatternColorIter;
 typedef std::vector<PatternColor*>::const_iterator PatternColorConstIter;
 std::vector<PatternColor*> gColors {
   new PatternColor("White", CRGB::White),
+  new PatternColor("Warm White", CRGB(0xE1A024)),
   new PatternColor("Red", CRGB::Red),
   new PatternColor("Green", CRGB::Green),
   new PatternColor("Blue", CRGB::Blue),
@@ -248,6 +249,11 @@ ValueChangedCb _brightnessChangedCb;
 ValueChangedCb _speedChangedCb;
 ESPAsyncE131 * _e131_interface;
 EventGroupHandle_t _eventGroup;
+
+ClassicFireEffect * _fireRoof = NULL;
+// ClassicFireEffect * _fireUnderbody = NULL;
+ClassicFireEffect * _fireLeftRocker = NULL;
+ClassicFireEffect * _fireLeftUpright = NULL;
 
 void init_led_strip(led_strip_t * strip)
 {
@@ -523,6 +529,45 @@ void LedController::Start()
   strip_rightUpright.pixels = &strip_C.pixels[strip_rightRocker.pixel_count];
   strip_leftRocker.pixels = strip_D.pixels;
   strip_leftUpright.pixels = &strip_D.pixels[strip_leftRocker.pixel_count];
+
+  // Setup the fire objects for each segment
+  _fireRoof = new         ClassicFireEffect(&strip_A,            // led_strip
+                                            &HorizontalBlend,    // blend_type
+                                            30,                  // cooling
+                                            70,                  // sparking
+                                            8,                   // sparks
+                                            strip_A.pixel_count, // sparkHeight
+                                            true,                // breversed
+                                            false);              // bmirrored
+
+  // Roof copied to underbody for now... may need to use a different setup for underbody to get more "lava"-like glow later
+  // _fireUnderbody = new    ClassicFireEffect(&strip_B, // led_strip
+  //                                           &HorizontalBlend,    // blend_type
+  //                                           30,                  // cooling
+  //                                           70,                  // sparking
+  //                                           6,                   // sparks
+  //                                           strip_B.pixel_count, // sparkHeight
+  //                                           true,                // breversed
+  //                                           false);              // bmirrored
+
+  _fireLeftRocker = new   ClassicFireEffect(&strip_leftRocker,
+                                            &HorizontalBlend,    // blend_type
+                                            30,                  // cooling
+                                            70,                  // sparking
+                                            3,                   // sparks
+                                            strip_leftRocker.pixel_count, // sparkHeight
+                                            true,                // breversed
+                                            false);              // bmirrored
+
+  _fireLeftUpright = new  ClassicFireEffect(&strip_leftUpright,
+                                            &ConvectionBlend,    // blend_type
+                                            20,                  // cooling
+                                            70,                  // sparking
+                                            3,                   // sparks
+                                            6,                   // sparkHeight
+                                            true,                // breversed
+                                            false);              // bmirrored
+  // Left will be copied to right - no need to calculate each side separately
 
   // Cart has a 12v->5v converter with 40A capacity
   FastLED.setMaxPowerInVoltsAndMilliamps(5,40000);
@@ -999,6 +1044,26 @@ void Pattern_Pulse() {
   }
 }
 
+void Pattern_Strobe()
+{
+  static bool lastStrobeState = false;
+
+  fill_solid( strip_A.pixels, strip_A.pixel_count, lastStrobeState ? GetCurrentColor() : CRGB::Black );
+  IncrementColor();
+  lastStrobeState = !lastStrobeState;
+}
+
+void Pattern_Fire()
+{
+  _fireRoof->DrawFire();
+  // _fireUnderbody->DrawFire();
+  _fireLeftRocker->DrawFire();
+  _fireLeftUpright->DrawFire();
+
+  // Copy left (D) to right (C)
+  memcpy((void*)strip_C.pixels, (const void*)strip_D.pixels, sizeof(CRGB) * strip_C.pixel_count);
+}
+
 const CRGB Xmas2Palette[] = {
  CRGB::Red,
  CRGB::Red,
@@ -1232,6 +1297,84 @@ static int color_cmd_func(int argc, char **argv)
     return 0;
 }
 
+static struct
+{
+    struct arg_int *speed_val;
+    struct arg_end *end;
+} speed_args;
+
+static int speed_cmd_func(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **) &speed_args);
+    if (nerrors != 0)
+    {
+        arg_print_errors(stderr, speed_args.end, argv[0]);
+        return 1;
+    }
+
+    if (speed_args.speed_val->count == 0)
+    {
+      // No speed provided, so just display the current speed
+      printf("\r\n");
+      printf("Speed: %u\r\n", bounded_speed.Value());
+      printf("Range: %u .. %u\r\n", bounded_speed.Min(), bounded_speed.Max());
+    }
+    else
+    {
+      int32_t newVal = speed_args.speed_val->ival[0];
+
+      if (newVal >= bounded_speed.Min() && newVal <= bounded_speed.Max())
+      {
+        bounded_speed.Set((uint8_t)newVal);
+      }
+      else
+      {
+        ESP_LOGW(__func__, "Invalid speed value %d (range: %u..%u)", newVal, bounded_speed.Min(), bounded_speed.Max());
+      }
+    }
+
+    return 0;
+}
+
+static struct
+{
+    struct arg_int *brightness_val;
+    struct arg_end *end;
+} brightness_args;
+
+static int brightness_cmd_func(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **) &brightness_args);
+    if (nerrors != 0)
+    {
+        arg_print_errors(stderr, brightness_args.end, argv[0]);
+        return 1;
+    }
+
+    if (brightness_args.brightness_val->count == 0)
+    {
+      // No brightness provided, so just display the current brightness
+      printf("\r\n");
+      printf("Brightness: %u\r\n", bounded_brightness.Value());
+      printf("Range: %u .. %u\r\n", bounded_brightness.Min(), bounded_brightness.Max());
+    }
+    else
+    {
+      int32_t newVal = brightness_args.brightness_val->ival[0];
+
+      if (newVal >= bounded_brightness.Min() && newVal <= bounded_brightness.Max())
+      {
+        bounded_brightness.Set((uint8_t)newVal);
+      }
+      else
+      {
+        ESP_LOGW(__func__, "Invalid brightness value %d (range: %u..%u)", newVal, bounded_brightness.Min(), bounded_brightness.Max());
+      }
+    }
+
+    return 0;
+}
+
 void register_led_controller_cmds(void)
 {
    // Pattern command
@@ -1263,6 +1406,36 @@ void register_led_controller_cmds(void)
   };
 
   ESP_ERROR_CHECK( esp_console_cmd_register(&color_cmd) );
+
+  // Speed command
+  speed_args.speed_val = arg_int0(NULL, NULL, "<speed>", "Speed value to set" );
+  speed_args.end = arg_end(2);
+
+  const esp_console_cmd_t speed_cmd =
+  {
+    .command = "speed",
+    .help = "Display/set the speed",
+    .hint = NULL,
+    .func = &speed_cmd_func,
+    .argtable = &speed_args
+  };
+
+  ESP_ERROR_CHECK( esp_console_cmd_register(&speed_cmd) );
+
+  // Brightness command
+  brightness_args.brightness_val = arg_int0(NULL, NULL, "<brightness>", "Brightness value to set" );
+  brightness_args.end = arg_end(2);
+
+  const esp_console_cmd_t brightness_cmd =
+  {
+    .command = "brightness",
+    .help = "Display/set the brightness",
+    .hint = NULL,
+    .func = &brightness_cmd_func,
+    .argtable = &brightness_args
+  };
+
+  ESP_ERROR_CHECK( esp_console_cmd_register(&brightness_cmd) );
 }
 
 SaveableSetting::SaveableSetting()
