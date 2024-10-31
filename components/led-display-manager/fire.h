@@ -16,6 +16,8 @@
 //
 //---------------------------------------------------------------------------
 
+#pragma once
+
 // #include <Arduino.h>
 #define FASTLED_INTERNAL
 #include <FastLED.h>
@@ -24,21 +26,27 @@
 #include "led-strip.h"
 
 // Compatibility
-#ifndef UnixTime
-float UnixTime()
-{
-    return (float)esp_timer_get_time() / 1000000.0f;
-}
-#endif
+// #ifndef UnixTime
+// float UnixTime()
+// {
+//     return (float)esp_timer_get_time() / 1000000.0f;
+// }
+// #endif
 
-float max(float a,float b) { return MAX(a,b); }
-float min(float a,float b) { return MIN(a,b); }
+typedef uint8_t byte;
 
-int32_t random(int32_t low, int32_t high)
+class MathHelp
 {
-    return low + (int32_t)((uint64_t)(high - low) * (uint64_t)esp_random() / (uint64_t)(UINT32_MAX));
-}
-int32_t random(int32_t high) { return random(0, high); }
+    public: 
+    static float max(float a,float b) { return ((a)>(b)?(a):(b)); }
+    static float min(float a,float b) { return ((a)<(b)?(a):(b)); }
+
+    static int32_t random(int32_t low, int32_t high)
+    {
+        return low + (int32_t)((uint64_t)(high - low) * (uint64_t)esp_random() / (uint64_t)(UINT32_MAX));
+    }
+    static int32_t random(int32_t high) { return MathHelp::random(0, high); }
+};
 
 typedef struct blend_type_t
 {
@@ -117,7 +125,7 @@ public:
     {
         // First cool each cell by a little bit
         for (int i = 0; i < Size; i++)
-            heatCur[i] = max(0L, heatCur[i] - random(0, ((Cooling * 10) / Size) + 2));
+            heatCur[i] = MathHelp::max(0L, heatCur[i] - MathHelp::random(0, ((Cooling * 10) / Size) + 2));
 
         // Next drift heat up and diffuse it a little but
         for (int i = 0; i < Size; i++)
@@ -136,17 +144,17 @@ public:
                 }
             }
 
-            heatNext[i] = (byte)min(255, max(0, (temp / blend_total)));
+            heatNext[i] = (byte)MathHelp::min(255, MathHelp::max(0, (temp / blend_total)));
         }
 
         // Randomly ignite new sparks down in the flame kernel
         for (int i = 0; i < Sparks; i++)
         {
-            if (random(255) < Sparking)
+            if (MathHelp::random(255) < Sparking)
             {
-                int y = Size - 1 - random(SparkHeight);
-                // heatNext[y] = heatNext[y] + random(160, 200); // This randomly rolls over sometimes of course, and that's essential to the effect
-                heatNext[y] = random(160, 220); // This randomly rolls over sometimes of course, and that's essential to the effect
+                int y = Size - 1 - MathHelp::random(SparkHeight);
+                // heatNext[y] = heatNext[y] + MathHelp::random(160, 200); // This randomly rolls over sometimes of course, and that's essential to the effect
+                heatNext[y] = MathHelp::random(160, 220); // This randomly rolls over sometimes of course, and that's essential to the effect
             }
         }
 
