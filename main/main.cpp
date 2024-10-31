@@ -37,7 +37,7 @@
 #include "AllLedPatterns.hpp"
 
 #define INCLUDE_TEST_PATTERNS 0  // 1 to include special test patterns
-#define DESKTOP_TEST          1  // 1 to configure for a desktop test with 32-pixel strip and no ethernet
+#define DESKTOP_TEST          0  // 1 to configure for a desktop test with 32-pixel strip and no ethernet
 
 // Macro to find array length
 #define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
