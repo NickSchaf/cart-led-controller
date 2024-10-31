@@ -2,6 +2,7 @@
 #define PATTERNCOLOR_HPP
 
 #include "FastLED.h"
+#include <vector>
 
 enum ColorIncrementMode
 {
@@ -25,6 +26,9 @@ class PatternColor
 	virtual ColorIncrementMode GetIncrementMode() const { return _incrementType; }
 	virtual void Increment() {}
 };
+
+typedef std::vector<PatternColor*>::iterator PatternColorIter;
+typedef std::vector<PatternColor*>::const_iterator PatternColorConstIter;
 
 class PatternColor_Random : public PatternColor
 {

@@ -25,7 +25,7 @@
 #include "lwip/sys.h"
 #include <lwip/netdb.h>
 
-#include "led-controller.hpp"
+#include "led-display-manager.hpp"
 #include "serial_console.h"
 #include "cmd_system.h"
 #include "cmd_nvs.h"
@@ -33,12 +33,74 @@
 #include "cmd_ble.h"
 
 #include "ESPAsyncE131.h"
+#include "FastLED.h"
+#include "AllLedPatterns.hpp"
 
+#define INCLUDE_TEST_PATTERNS 0  // 1 to include special test patterns
+#define DESKTOP_TEST          0  // 1 to configure for a desktop test with 32-pixel strip and no ethernet
+
+// Macro to find array length
+#define ARRAY_SIZE(A) (sizeof(A) / sizeof((A)[0]))
+
+#if DESKTOP_TEST
+  #define DATA_PIN_A 4
+  #define STRIP_A_COUNT 8
+  #define STRIP_B_COUNT 8
+  #define STRIP_C_COUNT 8
+  #define STRIP_D_COUNT 8
+  #define ROCKER_PIXEL_COUNT 4
+  #define UPRIGHT_PIXEL_COUNT 4
+#else
+  #define DATA_PIN_A 4 
+  #define DATA_PIN_B 12
+  #define DATA_PIN_C 13
+  #define DATA_PIN_D 16
+  #define STRIP_A_COUNT 300
+  #define STRIP_B_COUNT 240
+  #define STRIP_C_COUNT 109
+  #define STRIP_D_COUNT 109
+  #define ROCKER_PIXEL_COUNT 52
+  #define UPRIGHT_PIXEL_COUNT 57
+#endif
+
+#define ALL_LEDS_COUNT (STRIP_A_COUNT+STRIP_B_COUNT+STRIP_C_COUNT+STRIP_D_COUNT)
+
+#define LED_TYPE    WS2811
+#define COLOR_ORDER GRB
+
+#if INCLUDE_TEST_PATTERNS
+const CRGB PALETTE_RGBW[] = { CRGB::Red, CRGB::Green, CRGB::Blue, CRGB::White };
+#endif
+const CRGB PALETTE_XMAS[] = { CRGB::Red, CRGB::Green, CRGB::White };
+const CRGB PALETTE_PATRIOT[] = { CRGB::Red, CRGB::White, CRGB::Blue };
 
 static const char *TAG = "eth_example";
-static const char *payload = "Message from ESP32 ";
+
+// .pixels NULL for now - will be allocated during startup
+led_strip_t allLEDs = { .pixel_count = ALL_LEDS_COUNT,   .pixels = nullptr };     // Single array for all LEDs
+led_strip_t strip_A = { .pixel_count = STRIP_A_COUNT,    .pixels = nullptr };     // Subsets of allLEDs for sending to outputs
+led_strip_t strip_B = { .pixel_count = STRIP_B_COUNT,    .pixels = nullptr };
+led_strip_t strip_C = { .pixel_count = STRIP_C_COUNT,    .pixels = nullptr };
+led_strip_t strip_D = { .pixel_count = STRIP_D_COUNT,    .pixels = nullptr };
+
+#define strip_roof      strip_A       // Roof - starts back-right, wraps around front to back-left
+#define strip_underbody strip_B       // Underbody
+
+// Sides: 52 LEDs on rocker panel daisy-chained to 57 LEDs on upright
+#define strip_right     strip_C
+#define strip_left      strip_D
+
+// Special strips to refer to segments of the real strips
+// Rockers: back to front, uprights: bottom to top
+led_strip_t strip_rightRocker =  { .pixel_count = ROCKER_PIXEL_COUNT,  .pixels = nullptr };
+led_strip_t strip_rightUpright = { .pixel_count = UPRIGHT_PIXEL_COUNT, .pixels = nullptr };
+led_strip_t strip_leftRocker =   { .pixel_count = ROCKER_PIXEL_COUNT,  .pixels = nullptr };
+led_strip_t strip_leftUpright =  { .pixel_count = UPRIGHT_PIXEL_COUNT, .pixels = nullptr };
+led_strip_t strip_rightRoof =    { .pixel_count = 0,                   .pixels = nullptr };
+led_strip_t strip_leftRoof =     { .pixel_count = 0,                   .pixels = nullptr };
 
 ESPAsyncE131 e131(5);  // Buffers for 5 universes
+LedSpecialPatternFPP specialPatternFPP(&allLEDs);
 
 // #define EXAMPLE_STATIC_IP_ADDR        CONFIG_EXAMPLE_STATIC_IP_ADDR
 // #define EXAMPLE_STATIC_NETMASK_ADDR   CONFIG_EXAMPLE_STATIC_NETMASK_ADDR
@@ -48,6 +110,103 @@ ESPAsyncE131 e131(5);  // Buffers for 5 universes
 #define EXAMPLE_STATIC_GW_ADDR        "192.168.1.1"
 #define EXAMPLE_MAIN_DNS_SERVER       "192.168.1.1"
 #define EXAMPLE_BACKUP_DNS_SERVER     "192.168.1.1"
+
+bool e131Callback(e131_packet_t* ReceivedData, void* UserInfo)
+{
+  return specialPatternFPP.E131Callback(ReceivedData, UserInfo);
+}
+
+static void SetupLeds()
+{
+  printf("Setting up LEDs\n");
+  // All LEDs in a single array for simplicity of pattern calculation and E131 support
+  allLEDs.pixels = (CRGB*)malloc(allLEDs.pixel_count * sizeof(CRGB));
+
+  if (allLEDs.pixels == NULL) ESP_LOGE(__func__, "Failed to initialize pixels");
+  else
+  {
+    // Now set the pointers in the subset strips
+    strip_A.pixels = allLEDs.pixels;
+    strip_B.pixels = strip_A.pixels + strip_A.pixel_count;  // B follows A in the large array
+    strip_C.pixels = strip_B.pixels + strip_B.pixel_count;  // C follows B in the large array
+    strip_D.pixels = strip_C.pixels + strip_C.pixel_count;  // D follows C in the large array
+
+    // the WS2811 family uses the RMT driver
+#if DESKTOP_TEST
+    FastLED.addLeds<LED_TYPE, DATA_PIN_A, COLOR_ORDER>(allLEDs.pixels, allLEDs.pixel_count);
+#else
+    FastLED.addLeds<LED_TYPE, DATA_PIN_A, COLOR_ORDER>(strip_A.pixels, strip_A.pixel_count); // TODO: should I add .setCorrection(TypicalLEDStrip)  ??
+    FastLED.addLeds<LED_TYPE, DATA_PIN_B, COLOR_ORDER>(strip_B.pixels, strip_B.pixel_count);
+    FastLED.addLeds<LED_TYPE, DATA_PIN_C, COLOR_ORDER>(strip_C.pixels, strip_C.pixel_count);
+    FastLED.addLeds<LED_TYPE, DATA_PIN_D, COLOR_ORDER>(strip_D.pixels, strip_D.pixel_count);
+#endif
+  }
+
+  // Upright strip is daisy-chained to rocker panel on each side 
+  strip_rightRocker.pixels = strip_C.pixels;
+  strip_rightUpright.pixels = strip_rightRocker.pixels + strip_rightRocker.pixel_count;
+  strip_leftRocker.pixels = strip_D.pixels;
+  strip_leftUpright.pixels = strip_leftRocker.pixels + strip_leftRocker.pixel_count;
+
+  // Split the roof into left and right sides 
+  strip_leftRoof.pixel_count = strip_rightRoof.pixel_count = strip_roof.pixel_count / 2;
+  strip_rightRoof.pixels = strip_roof.pixels;
+  strip_leftRoof.pixels = strip_rightRoof.pixels + strip_rightRoof.pixel_count;
+
+  // Add the allLEDs strip to LedDisplayManager so it can clear everything between patterns
+  LedDisplayManager::AddLedStrip(&allLEDs);
+
+  // Cart has a 12v->5v converter with 40A capacity
+  FastLED.setMaxPowerInVoltsAndMilliamps(5,40000);
+}
+
+static void SetupPatterns()
+{
+  LedDisplayManager::AddPattern(new LedPatternRainbow({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternGlitter({&allLEDs}, 80));
+  LedDisplayManager::AddPattern(new LedPatternConfetti({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternSinelon({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternJuggle({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternBPM({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternKnightRider({&strip_A}));
+  LedDisplayManager::AddPattern(new LedPatternMarquee({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternFadingMarquee({&strip_leftRoof, &strip_leftRocker}, {&strip_rightRoof, &strip_rightRocker}));
+  LedDisplayManager::AddPattern(new LedPatternPolice({&strip_leftRoof, &strip_leftRocker}, {&strip_leftUpright}, {&strip_rightRoof, &strip_rightRocker}, {&strip_rightUpright}));
+  LedDisplayManager::AddPattern(new LedPatternSolid({&allLEDs}, 1000));
+  LedDisplayManager::AddPattern(new LedPatternPulse({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternStrobe({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternFire({&strip_leftRoof, &strip_leftRocker, &strip_rightRocker}, {&strip_leftUpright, &strip_rightUpright}));
+  LedDisplayManager::AddPattern(new LedPatternRainbowStripe({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternParty({&allLEDs}));
+  LedDisplayManager::AddPattern(new LedPatternPride({&allLEDs}));
+#if INCLUDE_TEST_PATTERNS
+// Special test patterns to check each strip
+  LedDisplayManager::AddPattern(new LedPatternSolid({&strip_roof}, 1000, "TEST Roof"));
+  LedDisplayManager::AddPattern(new LedPatternSolid({&strip_underbody}, 1000, "TEST Underbody"));
+  LedDisplayManager::AddPattern(new LedPatternSolid({&strip_rightRocker}, 1000, "TEST R Rocker"));
+  LedDisplayManager::AddPattern(new LedPatternSolid({&strip_rightUpright}, 1000, "TEST R Upright"));
+  LedDisplayManager::AddPattern(new LedPatternSolid({&strip_leftRocker}, 1000, "TEST L Rocker"));
+  LedDisplayManager::AddPattern(new LedPatternSolid({&strip_leftUpright}, 1000, "TEST L Upright"));
+#endif
+  LedDisplayManager::AddPattern(&specialPatternFPP);
+}
+
+static void SetupColors()
+{
+  LedDisplayManager::AddColor(new PatternColor("White", CRGB::White));
+  LedDisplayManager::AddColor(new PatternColor("Warm White", CRGB(0xE1A024)));
+  LedDisplayManager::AddColor(new PatternColor("Red", CRGB::Red));
+  LedDisplayManager::AddColor(new PatternColor("Green", CRGB::Green));
+  LedDisplayManager::AddColor(new PatternColor("Blue", CRGB::Blue));
+  LedDisplayManager::AddColor(new PatternColor("Violet", CRGB::Violet));
+  LedDisplayManager::AddColor(new PatternColor_Random());
+  LedDisplayManager::AddColor(new PatternColor_Rainbow());
+  LedDisplayManager::AddColor(new PatternColor_PaletteManual("[Xmas]", PALETTE_XMAS, ARRAY_SIZE(PALETTE_XMAS)));
+  LedDisplayManager::AddColor(new PatternColor_PaletteManual("[Patriot]", PALETTE_PATRIOT, ARRAY_SIZE(PALETTE_PATRIOT)));
+#if INCLUDE_TEST_PATTERNS
+  LedDisplayManager::AddColor(new PatternColor_PaletteManual("[RGBW]", PALETTE_RGBW, ARRAY_SIZE(PALETTE_RGBW)));
+#endif
+}
 
 /** Event handler for IP_EVENT_ETH_GOT_IP */
 static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
@@ -67,6 +226,15 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
 
 extern "C" {
   void app_main();
+}
+
+static void start_leds()
+{
+    SetupLeds();
+    SetupPatterns();
+    SetupColors();
+    e131.registerCallback(NULL, e131Callback);
+    LedDisplayManager::Start();
 }
 
 static esp_err_t example_set_dns_server(esp_netif_t *netif, uint32_t addr, esp_netif_dns_type_t type)
@@ -136,6 +304,7 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base,
 }
 
 void setupEthernet() {
+    printf("Setting up Ethernet\n");
     esp_netif_init();
 
     ESP_ERROR_CHECK(esp_event_loop_create_default());
@@ -215,7 +384,7 @@ Left Upright:   1777   1947
 Right Rocker:   1948   2103
 Right Upright:  2104   2274
 
-* Note that led-controller has following:
+* Note that led-display-manager has following:
 Roof:      Output A
 Underbody: Output B
 Right:     Output C
@@ -241,17 +410,18 @@ void app_main() {
     ESP_ERROR_CHECK(ret);
 
     // We want the LEDs running ASAP after power-up
-    LedController::SetE131Interface(&e131);
-    LedController::Start();
+    start_leds();
 
     // Give the LED task time to start
     vTaskDelay(1000 / portTICK_PERIOD_MS);
 
+#if !DESKTOP_TEST
     // Start Ethernet with static IP to be able to listed for E1.31 packets
     setupEthernet();
 
     // BLE used for user's remote control - this can be last because the user can wait a few seconds
     setup_GATTS();
+#endif
 
     // Setup and launch the serial console last
     init_serial_console();
