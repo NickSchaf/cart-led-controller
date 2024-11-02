@@ -1,3 +1,9 @@
 [submodule "ESPAsyncE131"]
 	path = ESPAsyncE131
 	url = git@github.com:NickSchaf/ESPAsyncE131.git
+[submodule "esp-idf-led-components"]
+	path = esp-idf-led-components
+	url = git@github.com:NickSchaf/esp-idf-led-components.git
+[submodule "esp-idf-console-components"]
+	path = esp-idf-console-components
+	url = git@github.com:NickSchaf/esp-idf-console-components.git
